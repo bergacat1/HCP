@@ -1,0 +1,22 @@
+Imatge: images/im01.ppm
+ISizeX : 0
+ISizeY : 0
+kSizeX : 3
+kSizeY : 3
+0.033399 seconds elapsed for Reading image file.
+0.000878 seconds elapsed for copying image structure.
+0.000183 seconds elapsed for Reading kernel matrix.
+0.015600 seconds elapsed for make the convolution.
+0.022449 seconds elapsed for writing the resulting image.
+0.072669 seconds elapsed
+Imatge: images/im01.ppm
+ISizeX : 0
+ISizeY : 0
+kSizeX : 99
+kSizeY : 99
+0.040036 seconds elapsed for Reading image file.
+0.001195 seconds elapsed for copying image structure.
+0.003500 seconds elapsed for Reading kernel matrix.
+14.530815 seconds elapsed for make the convolution.
+0.028256 seconds elapsed for writing the resulting image.
+14.604375 seconds elapsed

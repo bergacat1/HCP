@@ -16,7 +16,6 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
-#include <omp.h>
 
 // Estructura per emmagatzemar el contingut d'una imatge.
 struct imagenppm{
@@ -224,13 +223,13 @@ void freeImagestructure(ImagenData *src){
 int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
                float* kernel, int kernelSizeX, int kernelSizeY)
 {
-    int i, j;
+    int i, j, m, n;
     int *inPtr, *inPtr2, *outPtr;
     float *kPtr;
     int kCenterX, kCenterY;
     int rowMin, rowMax;                             // to check boundary of input array
     int colMin, colMax;                             //
-    //float sum;                                      // temp accumulation buffer
+    float sum;                                      // temp accumulation buffer
     
     // check validity of params
     if(!in || !out || !kernel) return -1;
@@ -246,41 +245,34 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     kPtr = kernel;
     
     // start convolution
-	// paralel private i
-    #pragma omp parallel for 
     for(i= 0; i < dataSizeY; ++i)                   // number of rows
     {
-            // compute the range of convolution, the current row of kernel should be between these
-            rowMax = i + kCenterY;
-            rowMin = i - dataSizeY + kCenterY;
-        // paralel private j, rowMax, rowMin
-
-        #pragma omp parallel for firstprivate(i, rowMax, rowMin, inPtr, kPtr, outPtr) 
+        // compute the range of convolution, the current row of kernel should be between these
+        rowMax = i + kCenterY;
+        rowMin = i - dataSizeY + kCenterY;
+        
         for(j = 0; j < dataSizeX; ++j)              // number of columns
         {
             // compute the range of convolution, the current column of kernel should be between these
             colMax = j + kCenterX;
             colMin = j - dataSizeX + kCenterX;
+            
+            sum = 0;                                // set to 0 before accumulate
 
             inPtr = inPtr2 + (i*dataSizeX) + j;
-           
-            float sum = 0;                                // set to 0 before accumulate
-            int n, m;
             
             // flip the kernel and traverse all the kernel values
             // multiply each kernel value with underlying input data
-			// paralel private colMin, colMax, m, copia de kPtr actualitzada
             for(m = 0; m < kernelSizeY; ++m)        // kernel rows
             {
                 // check if the index is out of bound of input array
                 if(m <= rowMax && m > rowMin)
                 {
-					// paralel private n, copia de kPtr actualitzada
                     for(n = 0; n < kernelSizeX; ++n)
                     {
                         // check the boundary of array
                         if(n <= colMax && n > colMin)
-                            sum += *(inPtr - n) * *kPtr; //paralel atomic
+                            sum += *(inPtr - n) * *kPtr;
                         
                         ++kPtr;                     // next kernel
                     }
@@ -290,10 +282,10 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
                 
                 inPtr -= dataSizeX;                 // move input data 1 raw up
             }
-			//paralel barrier
             
             // convert integer number
             outPtr = out + (i*dataSizeX) + j;
+
             if(sum >= 0) *outPtr = (int)(sum + 0.5f);
 //            else *outPtr = (int)(sum - 0.5f)*(-1);
             // For using with image editors like GIMP or others...
@@ -306,7 +298,6 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
             //++outPtr;                               // next output
         }
     }
-	//paralel barrier
     
     return 0;
 }
