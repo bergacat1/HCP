@@ -18,6 +18,9 @@
 #include <time.h>
 #include <omp.h>
 
+#define MAX(a, b)((a > b) ? a : b )  
+#define MIN(a, b)((a < b) ? a : b )  
+
 // Estructura per emmagatzemar el contingut d'una imatge.
 struct imagenppm{
     int altura;
@@ -229,7 +232,6 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     float *kPtr;
     int kCenterX, kCenterY;
     int rowMin, rowMax;                             // to check boundary of input array
-    int colMin, colMax;                             //
     //float sum;                                      // temp accumulation buffer
     
     // check validity of params
@@ -251,16 +253,16 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     for(i= 0; i < dataSizeY; ++i)                   // number of rows
     {
             // compute the range of convolution, the current row of kernel should be between these
-            rowMax = i + kCenterY;
-            rowMin = i - dataSizeY + kCenterY;
+            rowMax = MIN(i + kCenterY, kernelSizeY - 1);
+            rowMin = MAX(i - dataSizeY + kCenterY + 1, 0);
         // paralel private j, rowMax, rowMin
 
         #pragma omp parallel for firstprivate(i, rowMax, rowMin, inPtr, kPtr, outPtr) 
         for(j = 0; j < dataSizeX; ++j)              // number of columns
         {
             // compute the range of convolution, the current column of kernel should be between these
-            colMax = j + kCenterX;
-            colMin = j - dataSizeX + kCenterX;
+            int colMax = MIN(j + kCenterX, kernelSizeX - 1);
+            int colMin = MAX(j - dataSizeX + kCenterX + 1, 0);
 
             inPtr = inPtr2 + (i*dataSizeX) + j;
            
@@ -270,28 +272,34 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
             // flip the kernel and traverse all the kernel values
             // multiply each kernel value with underlying input data
 			// paralel private colMin, colMax, m, copia de kPtr actualitzada
-            for(m = 0; m < kernelSizeY; ++m)        // kernel rows
+            #pragma omp parallel for firstprivate(kPtr, inPtr, colMin, colMax) reduction(+:sum)
+            for(m = rowMin; m <= rowMax; ++m)        // kernel rows
             {
+                int *inPtrAux = inPtr;
+                inPtrAux = inPtr - m * dataSizeX;
                 // check if the index is out of bound of input array
-                if(m <= rowMax && m > rowMin)
-                {
+                //if(m <= rowMax && m > rowMin)
+                //{
 					// paralel private n, copia de kPtr actualitzada
-                    for(n = 0; n < kernelSizeX; ++n)
+                    #pragma omp parallel for firstprivate(m, kPtr, inPtrAux) reduction(+:sum)
+                    for(n = colMin; n <= colMax; ++n)
                     {
+                        kPtr = kernel + m * kernelSizeX + n;
+                        //inPtr = inPtr - m * dataSizeX;
                         // check the boundary of array
-                        if(n <= colMax && n > colMin)
-                            sum += *(inPtr - n) * *kPtr; //paralel atomic
+                        //if(n <= colMax && n > colMin)
+                        sum += *(inPtrAux - n) * *kPtr; //paralel atomic
                         
-                        ++kPtr;                     // next kernel
+                        //++kPtr;                     // next kernel
                     }
-                }
-                else
-                    kPtr += kernelSizeX;            // out of bound, move to next row of kernel
+                //}
+                //else
+                //    kPtr += kernelSizeX;            // out of bound, move to next row of kernel
                 
-                inPtr -= dataSizeX;                 // move input data 1 raw up
+                //inPtr -= dataSizeX;                 // move input data 1 raw up
             }
 			//paralel barrier
-            
+            //#pragma omp barrier
             // convert integer number
             outPtr = out + (i*dataSizeX) + j;
             if(sum >= 0) *outPtr = (int)(sum + 0.5f);
