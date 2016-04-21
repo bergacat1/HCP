@@ -231,7 +231,7 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     int *inPtr, *inPtr2, *outPtr;
     float *kPtr;
     int kCenterX, kCenterY;
-    int rowMin, rowMax;                             // to check boundary of input array
+    //int rowMin, rowMax;                             // to check boundary of input array
     //float sum;                                      // temp accumulation buffer
     
     // check validity of params
@@ -249,15 +249,15 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     
     // start convolution
 	// paralel private i
-    #pragma omp parallel for 
+    #pragma omp parallel for firstprivate(j, inPtr, kPtr, outPtr, kCenterX, kCenterY, dataSizeX, dataSizeY, kernelSizeX, kernelSizeY) schedule(dynamic)
     for(i= 0; i < dataSizeY; ++i)                   // number of rows
     {
-            // compute the range of convolution, the current row of kernel should be between these
-            rowMax = MIN(i + kCenterY, kernelSizeY - 1);
-            rowMin = MAX(i - dataSizeY + kCenterY + 1, 0);
+        // compute the range of convolution, the current row of kernel should be between these
+        int rowMax = MIN(i + kCenterY, kernelSizeY - 1);
+        int rowMin = MAX(i - dataSizeY + kCenterY + 1, 0);
         // paralel private j, rowMax, rowMin
 
-        #pragma omp parallel for firstprivate(i, rowMax, rowMin, inPtr, kPtr, outPtr) 
+        //#pragma omp parallel for firstprivate(i, rowMax, rowMin, inPtr, kPtr, outPtr) 
         for(j = 0; j < dataSizeX; ++j)              // number of columns
         {
             // compute the range of convolution, the current column of kernel should be between these
@@ -271,27 +271,22 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
             
             // flip the kernel and traverse all the kernel values
             // multiply each kernel value with underlying input data
-			// paralel private colMin, colMax, m, copia de kPtr actualitzada
-            #pragma omp parallel for firstprivate(kPtr, inPtr, colMin, colMax) reduction(+:sum)
             for(m = rowMin; m <= rowMax; ++m)        // kernel rows
             {
-                int *inPtrAux = inPtr;
-                inPtrAux = inPtr - m * dataSizeX;
+                int *inPtrAux = inPtr - m * dataSizeX;
                 // check if the index is out of bound of input array
                 //if(m <= rowMax && m > rowMin)
                 //{
-					// paralel private n, copia de kPtr actualitzada
-                    #pragma omp parallel for firstprivate(m, kPtr, inPtrAux) reduction(+:sum)
-                    for(n = colMin; n <= colMax; ++n)
-                    {
-                        kPtr = kernel + m * kernelSizeX + n;
-                        //inPtr = inPtr - m * dataSizeX;
-                        // check the boundary of array
-                        //if(n <= colMax && n > colMin)
-                        sum += *(inPtrAux - n) * *kPtr; //paralel atomic
-                        
-                        //++kPtr;                     // next kernel
-                    }
+                for(n = colMin; n <= colMax; ++n)
+                {
+                    kPtr = kernel + m * kernelSizeX + n;
+                    //inPtr = inPtr - m * dataSizeX;
+                    // check the boundary of array
+                    //if(n <= colMax && n > colMin)
+                    sum += *(inPtrAux - n) * *kPtr; //paralel atomic
+                    
+                    //++kPtr;                     // next kernel
+                }
                 //}
                 //else
                 //    kPtr += kernelSizeX;            // out of bound, move to next row of kernel
@@ -314,7 +309,6 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
             //++outPtr;                               // next output
         }
     }
-	//paralel barrier
     
     return 0;
 }
