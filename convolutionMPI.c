@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
-#include <omp.h>
+#include <mpi.h>
 
 #define MAX(a, b)((a > b) ? a : b )  
 #define MIN(a, b)((a < b) ? a : b )  
@@ -50,7 +50,9 @@ int readImage(ImagenData Img, FILE **fp, int dim, int halosize, long int *positi
 int duplicateImageChunk(ImagenData src, ImagenData dst, int dim);
 int initfilestore(ImagenData img, FILE **fp, char* nombre, long *position);
 int savingChunk(ImagenData img, FILE **fp, int dim, int offset);
-int convolve2D(int* inbuf, int* outbuf, int sizeX, int sizeY, float* kernel, int ksizeX, int ksizeY);
+int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
+               float* kernel, int kernelSizeX, int kernelSizeY,
+               int yFrom, int yTo);
 void freeImagestructure(ImagenData *src);
 
 //Open Image file and image struct initialization
@@ -225,9 +227,10 @@ void freeImagestructure(ImagenData *src){
 // signed integer (32bit) version:
 ///////////////////////////////////////////////////////////////////////////////
 int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
-               float* kernel, int kernelSizeX, int kernelSizeY)
+               float* kernel, int kernelSizeX, int kernelSizeY,
+               int yFrom, int yTo)
 {
-    int i, j;
+    int i, j, rank;
     int *inPtr, *inPtr2, *outPtr;
     float *kPtr;
     int kCenterX, kCenterY;
@@ -246,10 +249,16 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     inPtr = inPtr2 = &in[dataSizeX * kCenterY + kCenterX];  // note that  it is shifted (kCenterX, kCenterY),
     outPtr = out;
     kPtr = kernel;
+
+
+    MPI_Comm_rank (MPI_COMM_WORLD, &rank);        // get current process id
+//    printf( "Hi there it's process %d. I'm convoluting from i: %d to %d\n", rank, yFrom, yTo);
     
     // start convolution
-    for(i= 0; i < dataSizeY; ++i)                   // number of rows
+    for(i= yFrom; i < yTo; ++i)                   // number of rows
     {
+
+        //printf( "Hi there from process %d. I'm convoluting at i: %d \n", rank, i);
         // compute the range of convolution, the current row of kernel should be between these
         int rowMax = MIN(i + kCenterY, kernelSizeY - 1);
         int rowMin = MAX(i - dataSizeY + kCenterY + 1, 0);
@@ -289,14 +298,16 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
                 
                 //inPtr -= dataSizeX;                 // move input data 1 raw up
             }
+            if(sum != 0) printf("----------SUM:::%d", sum);
             // convert integer number
-            outPtr = out + (i*dataSizeX) + j;
+            outPtr = out + ((i-yFrom)*dataSizeX) + j;
             if(sum >= 0) *outPtr = (int)(sum + 0.5f);
 //            else *outPtr = (int)(sum - 0.5f)*(-1);
             // For using with image editors like GIMP or others...
             else *outPtr = (int)(sum - 0.5f);
             // For using with a text editor that read ppm images like libreoffice or others...
 //            else *outPtr = 0;
+
             
             kPtr = kernel;                          // reset kernel to (0,0)
             //inPtr = ++inPtr2;                       // next input
@@ -444,10 +455,109 @@ int main(int argc, char **argv)
         //////////////////////////////////////////////////////////////////////////////////////////////////
         gettimeofday(&tim, NULL);
         start = tim.tv_sec+(tim.tv_usec/1000000.0);
+
+
+        int rank, size;
+        char hostname[256];
+        int namelen;
         
-        convolve2D(source->R, output->R, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY);
-        convolve2D(source->G, output->G, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY);
-        convolve2D(source->B, output->B, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY);
+        MPI_Init (&argc, &argv);      /* starts MPI */
+        MPI_Comm_rank (MPI_COMM_WORLD, &rank);        // get current process id
+        MPI_Comm_size (MPI_COMM_WORLD, &size);        // get number of processes
+        MPI_Get_processor_name(hostname, &namelen);   // get CPU name
+
+        int workPackageSize = ((source->altura/partitions)+halosize) / (size - 1);
+        int workPackageRest = ((source->altura/partitions)+halosize) % (size - 1);
+        int recvMaxSize = ((workPackageSize + workPackageRest) * source->ancho) + 2;
+        int packageDataSize = (recvMaxSize * 3) + 2;
+
+        printf( "Hello world from process %d of %d (node %s)\n", rank, size, hostname );
+        if(rank == 0){
+            MPI_Status status;
+            MPI_Request send_request;
+            int *inmsg, *outmsg, nchunks = 0, total_chunks = size - 1;
+
+
+            inmsg=(int*)malloc(sizeof(int)*packageDataSize);
+            outmsg=(int*)malloc(sizeof(int)*2);
+
+            //Initial work size
+            outmsg[0] = 0;
+            outmsg[1] = workPackageSize + workPackageRest;
+
+            while(nchunks < total_chunks){
+                printf( "Let's see...........\n");
+                MPI_Recv (inmsg, 0, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+                printf( "Received from %d with TAG %d \n", status.MPI_SOURCE, status.MPI_TAG);
+                if(status.MPI_TAG == 0){ //Request work
+                    printf( "Heey, MASTER and the next partition starts at pos %d of max %d!!\n", outmsg[0], ((source->altura/partitions)+halosize));
+                    if(outmsg[0] < (source->altura/partitions)+halosize){
+                        MPI_Isend(outmsg, 2, MPI_INT, status.MPI_SOURCE, 1, MPI_COMM_WORLD, &send_request);
+                        outmsg[0] = outmsg[1];
+                        outmsg[1] += workPackageSize;
+                    }else{
+                        MPI_Isend(outmsg, 0, MPI_INT, status.MPI_SOURCE, 0, MPI_COMM_WORLD, &send_request);   
+                        nchunks++;                     
+                    }
+                }else if(status.MPI_TAG == 1){ //Worker wants to send finished work
+                    printf( "Heey, I'm MASTER and I'm going to receive from proc %d!!\n", status.MPI_SOURCE);                    
+                    MPI_Recv (inmsg, packageDataSize, MPI_INT, status.MPI_SOURCE, 2, MPI_COMM_WORLD, &status);
+                    printf( "Heey, I'm MASTER and I've received from proc %d!!\n", status.MPI_SOURCE);
+
+                    memcpy(output->R + inmsg[0] * source->ancho, inmsg + 2, sizeof(int) * (inmsg[1] - inmsg[0]) * source->ancho);
+                    memcpy(output->G + inmsg[0] * source->ancho, inmsg + 2 + recvMaxSize, sizeof(int) * (inmsg[1] - inmsg[0]) * source->ancho);
+                    memcpy(output->B + inmsg[0] * source->ancho, inmsg + 2 + 2 * recvMaxSize, sizeof(int) * (inmsg[1] - inmsg[0]) * source->ancho);
+                }
+
+            }
+
+        }else{
+            MPI_Status status;
+            MPI_Request send_request;
+            int *inmsg, *outmsg;
+            inmsg=(int*)malloc(sizeof(int)*2);
+            if(inmsg==NULL)
+            {
+                printf("Unable to allocate memory\n");
+                return;
+            }
+
+            outmsg=(int*)malloc(sizeof(int)*packageDataSize);
+            if(inmsg==NULL)
+            {
+                printf("Unable to allocate memory\n");
+                return;
+            }
+
+            MPI_Isend(outmsg, 0, MPI_INT, 0, 0, MPI_COMM_WORLD,&send_request); 
+            MPI_Recv (inmsg, 2, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            while(status.MPI_TAG != 0){
+                outmsg[0] = inmsg[0];
+                outmsg[1] = inmsg[1];
+            
+                printf( "Heey, I'm process %d and I'm alive!!\n", rank);
+
+                convolve2D(source->R, outmsg + 2, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY, inmsg[0], inmsg[1]);
+
+                convolve2D(source->G, outmsg + recvMaxSize + 2, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY, inmsg[0], inmsg[1]);
+
+                convolve2D(source->B, outmsg + (2 * recvMaxSize) + 2, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY, inmsg[0], inmsg[1]);
+
+                printf( "Heey, I'm process %d and I've finished the convolution!!\n", rank); 
+
+                MPI_Isend(outmsg, 0, MPI_INT, 0, 1, MPI_COMM_WORLD,&send_request); //send the convolution results
+                MPI_Isend(outmsg, packageDataSize, MPI_INT, 0, 2, MPI_COMM_WORLD,&send_request);
+
+                printf( "Heey, I'm process %d and I've sent the convolution data!!\n", rank);   
+
+                MPI_Isend(outmsg, 0, MPI_INT, 0, 0, MPI_COMM_WORLD,&send_request); //need more work
+                MPI_Recv (inmsg, 2, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+                printf( "Heey, I'm process %d and new work TAG is %d!!\n", rank, status.MPI_TAG);
+            }
+        }
+        
+
+        MPI_Finalize();
         
         gettimeofday(&tim, NULL);
         tconv = tconv + (tim.tv_sec+(tim.tv_usec/1000000.0) - start);
