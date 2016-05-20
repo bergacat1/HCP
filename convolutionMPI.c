@@ -298,7 +298,7 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
                 
                 //inPtr -= dataSizeX;                 // move input data 1 raw up
             }
-            if(sum != 0) printf("----------SUM:::%d", sum);
+            //if(sum != 0) printf("----------SUM:::%d", sum);
             // convert integer number
             outPtr = out + ((i-yFrom)*dataSizeX) + j;
             if(sum >= 0) *outPtr = (int)(sum + 0.5f);
@@ -327,16 +327,17 @@ int main(int argc, char **argv)
     int i=0,j=0,k=0;
 //    int headstored=0, imagestored=0, stored;
     
-    if(argc != 5)
+    if(argc != 6)
     {
-        printf("Usage: %s <image-file> <kernel-file> <result-file> <partitions>\n", argv[0]);
+        printf("Usage: %s <image-file> <kernel-file> <result-file> <partitions> <num-chunks>\n", argv[0]);
         
         printf("\n\nError, Missing parameters:\n");
         printf("format: ./serialconvolution image_file kernel_file result_file\n");
         printf("- image_file : source image path (*.ppm)\n");
         printf("- kernel_file: kernel path (text file with 1D kernel matrix)\n");
         printf("- result_file: result image path (*.ppm)\n");
-        printf("- partitions : Image partitions\n\n");
+        printf("- partitions : Image partitions\n");
+        printf("- num-chunks : Number of chunks to divide the convolution process. If num-chunks is equal to the number of mpi processes minus 1, the program will execute in a static way.\n\n");
         return -1;
     }
     
@@ -352,6 +353,9 @@ int main(int argc, char **argv)
 
     // Store number of partitions
     partitions = atoi(argv[4]);
+
+    // Store number of chunks
+    int num_chunks = atoi(argv[5]);
     ////////////////////////////////////////
     //Reading kernel matrix
     gettimeofday(&tim, NULL);
@@ -405,7 +409,7 @@ int main(int argc, char **argv)
     //////////////////////////////////////////////////////////////////////////////////////////////////
     // CHUNK READING
     //////////////////////////////////////////////////////////////////////////////////////////////////
-    int c=0, offset=0;
+    int c=0, offset=0, rank = 0;
     imagesize = source->altura*source->ancho;
     partsize  = (source->altura*source->ancho)/partitions;
 //    printf("%s ocupa %dx%d=%d pixels. Partitions=%d, halo=%d, partsize=%d pixels\n", argv[1], source->altura, source->ancho, imagesize, partitions, halo, partsize);
@@ -453,11 +457,13 @@ int main(int argc, char **argv)
         //////////////////////////////////////////////////////////////////////////////////////////////////
         // CHUNK CONVOLUTION
         //////////////////////////////////////////////////////////////////////////////////////////////////
-        gettimeofday(&tim, NULL);
-        start = tim.tv_sec+(tim.tv_usec/1000000.0);
+        /*gettimeofday(&tim, NULL);
+        start = tim.tv_sec+(tim.tv_usec/1000000.0);*/
+
+        start = MPI_Wtime();
 
 
-        int rank, size;
+        int size;
         char hostname[256];
         int namelen;
         
@@ -466,16 +472,15 @@ int main(int argc, char **argv)
         MPI_Comm_size (MPI_COMM_WORLD, &size);        // get number of processes
         MPI_Get_processor_name(hostname, &namelen);   // get CPU name
 
-        int workPackageSize = ((source->altura/partitions)+halosize) / (size - 1);
-        int workPackageRest = ((source->altura/partitions)+halosize) % (size - 1);
-        int recvMaxSize = ((workPackageSize + workPackageRest) * source->ancho) + 2;
+        int workPackageSize = ((source->altura/partitions)+halosize) / num_chunks;
+        int workPackageRest = ((source->altura/partitions)+halosize) % num_chunks;
+        int recvMaxSize = ((workPackageSize + workPackageRest) * source->ancho);
         int packageDataSize = (recvMaxSize * 3) + 2;
 
-        printf( "Hello world from process %d of %d (node %s)\n", rank, size, hostname );
         if(rank == 0){
             MPI_Status status;
             MPI_Request send_request;
-            int *inmsg, *outmsg, nchunks = 0, total_chunks = size - 1;
+            int *inmsg, *outmsg, active_workers = 0, total_workers = MIN(size - 1, num_chunks), i, j;
 
 
             inmsg=(int*)malloc(sizeof(int)*packageDataSize);
@@ -485,24 +490,18 @@ int main(int argc, char **argv)
             outmsg[0] = 0;
             outmsg[1] = workPackageSize + workPackageRest;
 
-            while(nchunks < total_chunks){
-                printf( "Let's see...........\n");
-                MPI_Recv (inmsg, 0, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-                printf( "Received from %d with TAG %d \n", status.MPI_SOURCE, status.MPI_TAG);
+            while(active_workers < total_workers){
+                MPI_Recv (inmsg, packageDataSize, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
                 if(status.MPI_TAG == 0){ //Request work
-                    printf( "Heey, MASTER and the next partition starts at pos %d of max %d!!\n", outmsg[0], ((source->altura/partitions)+halosize));
                     if(outmsg[0] < (source->altura/partitions)+halosize){
                         MPI_Isend(outmsg, 2, MPI_INT, status.MPI_SOURCE, 1, MPI_COMM_WORLD, &send_request);
                         outmsg[0] = outmsg[1];
                         outmsg[1] += workPackageSize;
                     }else{
                         MPI_Isend(outmsg, 0, MPI_INT, status.MPI_SOURCE, 0, MPI_COMM_WORLD, &send_request);   
-                        nchunks++;                     
+                        active_workers++;                     
                     }
                 }else if(status.MPI_TAG == 1){ //Worker wants to send finished work
-                    printf( "Heey, I'm MASTER and I'm going to receive from proc %d!!\n", status.MPI_SOURCE);                    
-                    MPI_Recv (inmsg, packageDataSize, MPI_INT, status.MPI_SOURCE, 2, MPI_COMM_WORLD, &status);
-                    printf( "Heey, I'm MASTER and I've received from proc %d!!\n", status.MPI_SOURCE);
 
                     memcpy(output->R + inmsg[0] * source->ancho, inmsg + 2, sizeof(int) * (inmsg[1] - inmsg[0]) * source->ancho);
                     memcpy(output->G + inmsg[0] * source->ancho, inmsg + 2 + recvMaxSize, sizeof(int) * (inmsg[1] - inmsg[0]) * source->ancho);
@@ -535,7 +534,6 @@ int main(int argc, char **argv)
                 outmsg[0] = inmsg[0];
                 outmsg[1] = inmsg[1];
             
-                printf( "Heey, I'm process %d and I'm alive!!\n", rank);
 
                 convolve2D(source->R, outmsg + 2, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY, inmsg[0], inmsg[1]);
 
@@ -543,39 +541,37 @@ int main(int argc, char **argv)
 
                 convolve2D(source->B, outmsg + (2 * recvMaxSize) + 2, source->ancho, (source->altura/partitions)+halosize, kern->vkern, kern->kernelX, kern->kernelY, inmsg[0], inmsg[1]);
 
-                printf( "Heey, I'm process %d and I've finished the convolution!!\n", rank); 
 
-                MPI_Isend(outmsg, 0, MPI_INT, 0, 1, MPI_COMM_WORLD,&send_request); //send the convolution results
-                MPI_Isend(outmsg, packageDataSize, MPI_INT, 0, 2, MPI_COMM_WORLD,&send_request);
-
-                printf( "Heey, I'm process %d and I've sent the convolution data!!\n", rank);   
+                MPI_Isend(outmsg, packageDataSize, MPI_INT, 0, 1, MPI_COMM_WORLD,&send_request);
 
                 MPI_Isend(outmsg, 0, MPI_INT, 0, 0, MPI_COMM_WORLD,&send_request); //need more work
                 MPI_Recv (inmsg, 2, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-                printf( "Heey, I'm process %d and new work TAG is %d!!\n", rank, status.MPI_TAG);
             }
         }
         
 
         MPI_Finalize();
         
-        gettimeofday(&tim, NULL);
-        tconv = tconv + (tim.tv_sec+(tim.tv_usec/1000000.0) - start);
+        /*gettimeofday(&tim, NULL);
+        tconv = tconv + (tim.tv_sec+(tim.tv_usec/1000000.0) - start);*/
+        tconv = tconv + (MPI_Wtime() - start);
         
         //////////////////////////////////////////////////////////////////////////////////////////////////
         // CHUNK SAVING
         //////////////////////////////////////////////////////////////////////////////////////////////////
         //Storing resulting image partition.
-        gettimeofday(&tim, NULL);
-        start = tim.tv_sec+(tim.tv_usec/1000000.0);
-        if (savingChunk(output, &fpdst, partsize, offset)) {
-            perror("Error: ");
-            //        free(source);
-            //        free(output);
-            return -1;
+        if(rank == 0){
+            gettimeofday(&tim, NULL);
+            start = tim.tv_sec+(tim.tv_usec/1000000.0);
+            if (savingChunk(output, &fpdst, partsize, offset)) {
+                perror("Error: ");
+                //        free(source);
+                //        free(output);
+                return -1;
+            }
+            gettimeofday(&tim, NULL);
+            tstore = tstore + (tim.tv_sec+(tim.tv_usec/1000000.0) - start);            
         }
-        gettimeofday(&tim, NULL);
-        tstore = tstore + (tim.tv_sec+(tim.tv_usec/1000000.0) - start);
         //Next partition
         c++;
     }
@@ -588,17 +584,20 @@ int main(int argc, char **argv)
     
     gettimeofday(&tim, NULL);
     tend = tim.tv_sec+(tim.tv_usec/1000000.0);
+
+    if(rank == 0){
+        printf("Imatge: %s\n", argv[1]);
+        printf("ISizeX : %d\n", source->ancho);
+        printf("ISizeY : %d\n", source->altura);
+        printf("kSizeX : %d\n", kern->kernelX);
+        printf("kSizeY : %d\n", kern->kernelY);
+        printf("%.6lf seconds elapsed for Reading image file.\n", tread);
+        printf("%.6lf seconds elapsed for copying image structure.\n", tcopy);
+        printf("%.6lf seconds elapsed for Reading kernel matrix.\n", treadk);
+        printf("%.6lf seconds elapsed for make the convolution.\n", tconv);
+        printf("%.6lf seconds elapsed for writing the resulting image.\n", tstore);
+        printf("%.6lf seconds elapsed\n", tend-tstart);        
+    }
     
-    printf("Imatge: %s\n", argv[1]);
-    printf("ISizeX : %d\n", source->ancho);
-    printf("ISizeY : %d\n", source->altura);
-    printf("kSizeX : %d\n", kern->kernelX);
-    printf("kSizeY : %d\n", kern->kernelY);
-    printf("%.6lf seconds elapsed for Reading image file.\n", tread);
-    printf("%.6lf seconds elapsed for copying image structure.\n", tcopy);
-    printf("%.6lf seconds elapsed for Reading kernel matrix.\n", treadk);
-    printf("%.6lf seconds elapsed for make the convolution.\n", tconv);
-    printf("%.6lf seconds elapsed for writing the resulting image.\n", tstore);
-    printf("%.6lf seconds elapsed\n", tend-tstart);
     return 0;
 }
