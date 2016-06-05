@@ -250,6 +250,8 @@ int convolve2D(int* in, int* out, int dataSizeX, int dataSizeY,
     inPtr = inPtr2 = &in[dataSizeX * kCenterY + kCenterX];  // note that  it is shifted (kCenterX, kCenterY),
     outPtr = out;
     kPtr = kernel;
+
+    #pragma omp parallel num_threads(4)
     
     // start convolution
     for(i= yFrom; i < yTo; ++i)                   // number of rows
